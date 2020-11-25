@@ -1,0 +1,150 @@
+---
+title: "Excluding duplicated rows"
+author: "Wolf Riepl"
+date: "Report created: `r Sys.time()`"
+output:
+  html_document:
+    code_folding: show
+    code_download: true
+    toc: true
+    toc_float: true
+    theme: yeti
+---
+
+<style type="text/css">
+  
+body, td {
+    font-size: 16px;
+}
+
+code.r{
+  font-size: 14px;
+}
+
+pre {
+  font-size: 14px
+}
+
+</style>
+
+```{r setup}
+
+library(knitr)
+library(bench)
+# library(microbenchmark)
+library(nycflights13)
+library(data.table)
+
+knitr::opts_chunk$set(echo = TRUE)
+
+data("flights")
+str(flights)
+
+flights_dt <- as.data.table(flights)
+
+```
+
+Let's take a quick glance at the data:
+
+```{r data}
+
+format(object.size(flights), units = "auto")
+
+```
+
+# Base R's unique()
+
+So how long does it take to exclude duplicates using Base R's unique() function?
+
+```{r base}
+
+gc()
+bench::mark(
+  unique(flights)
+)
+
+```
+
+# Ideas for Speed-Ups
+
+So how can we improve on that runtime? Two ideas come to mind:
+
+1. We don't need to supply the unique() function the whole dataset, which takes all columns (variables) into account. A subset of columns should suffice to identify duplictes.
+2. The excellent *data.table* package offers on optimized unique() function.
+
+So let's try the first approach to see what we can achieve in Base R.
+
+From a first glance at the data, variables *dep_time, arr_time and time_hour* should identify unique flights.
+
+# Using only selected columns
+
+```{r base_subset1, error = TRUE}
+
+gc()
+
+timings_base <- bench::mark(
+  Base_full = unique(flights),
+  Base_3Var = flights[!duplicated(flights[, c("dep_time", "arr_time", "time_hour")]), ],
+  iterations = 1
+)
+
+```
+
+OK, my assumption was wrong. Good that **bench::mark** checked that. *time_hour* is too coarse. Turns out that with the four variables *tailnum, minute, time_hour, and flight*, we can identify unique flights.
+
+Next challenge: How to use these variables in Base R? The *unique()* function doesn't provide an argument to use only selected columns. We can switch to the *duplicated()* function to identify rows to exclude. We'll negate it to keep non-duplicated rows.
+
+```{r base_subset2}
+
+gc()
+
+timings_base <- bench::mark(
+  Base_full = unique(flights),
+  Base_4Var = flights[!duplicated(flights[, c("tailnum", "minute", "time_hour", "flight")]), ],
+  iterations = 1
+)
+
+timings_base
+
+```
+Despite a slighty more complicated code, runtimes were reduced by about half.
+
+Let's see what **data.table** can do.
+
+# data.table
+
+```{r}
+
+# Run garbage collector before benchmarks
+gc()
+
+timings_dt <- bench::mark(
+  dt_full = unique(flights_dt),
+  dt_4Var = unique(flights_dt, by = c("tailnum", "minute", "time_hour", "flight")),
+  iterations = 1
+)
+
+timings_dt
+
+```
+
+That looks impressive! Let's be lazy and have R compute by which factor our runtimes improved.
+
+# Summary: Performance Gains
+
+```{r runtime_factors}
+
+# Base R: All columns vs. selected columns
+as.numeric(timings_base[1, "median"]) / as.numeric(timings_base[2, "median"]) 
+
+# Full dataset: Base R vs. data.table
+as.numeric(timings_base[1, "median"]) / as.numeric(timings_dt[1, "median"]) 
+
+# Subset of columns: Base R vs. data.table
+as.numeric(timings_base[2, "median"]) / as.numeric(timings_dt[2, "median"])
+
+# Total speed improvement: data.table on selected columns vs. Base R on full data
+as.numeric(timings_base[1, "median"]) / as.numeric(timings_dt[2, "median"])
+
+```
+
